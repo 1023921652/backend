@@ -2,13 +2,13 @@ from app.agent.llm.deepseek import deepseek_llm
 from langchain.agents import create_agent
 from app.agent.config.redis_config import get_redis_checkpointer
 from app.agent.state.main_state import CustomAgentState
-
+from app.agent.llm import get_llm
 # 定义一个异步工厂函数 / 依赖项
 async def set_agent(mcp_tools: list = None):
     memory = await get_redis_checkpointer()
     tools = list(mcp_tools or [])
     agent = create_agent(
-        model=deepseek_llm,
+        model=get_llm(),
         tools=tools,
         state_schema=CustomAgentState,
         middleware=[],

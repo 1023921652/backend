@@ -3,6 +3,11 @@
 保留原有 /items/{id} 与 /items/ 两条 demo 路由（含 X-Token 校验、内联 fake_db）。
 新增 OpenAI 标准 /v1/chat/completions（流式 + 非流式）和 /v1/models 路由。
 """
+# 必须最先：把 .env 加载到 os.environ，再让 setup_logging / 各模块读 env 生效
+from dotenv import load_dotenv
+
+load_dotenv(".env")
+
 import uvicorn
 from typing import Annotated
 
@@ -11,12 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.api.v1.chat import router as chat_router
+from app.api.v1.rag import router as rag_router
 from app.core.errors import register_exception_handlers
 from app.core.lifespan import lifespan
 from app.core.logging import setup_logging
 from app.core.middleware import RequestIdMiddleware
 
-# 启动前先初始化日志
+# 启动前先初始化日志（此时 LOG_DIR / LOG_LEVEL_THREAD 等已就绪）
 setup_logging()
 
 app = FastAPI(
@@ -47,6 +53,7 @@ register_exception_handlers(app)
 # OpenAI 兼容路由
 # ==========================================
 app.include_router(chat_router)
+app.include_router(rag_router)
 
 
 # ==========================================

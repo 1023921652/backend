@@ -16,10 +16,10 @@ from logging.handlers import TimedRotatingFileHandler
 
 from app.core.context import request_id_ctx_var
 
-LOG_DIR = "logs"
+LOG_DIR = os.getenv("LOG_DIR", "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
-MAX_BYTES = 100 * 1024 * 1024  # 100 MB
-BACKUP_COUNT = 10
+MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(100 * 1024 * 1024)))  # 默认 100 MB
+BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "10"))
 LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(request_id)s] %(message)s"
 
 

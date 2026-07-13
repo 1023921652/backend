@@ -27,13 +27,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("building agent singleton at startup...")
 
     try:
+        from app.rag.document_rag.tools import rag_search
+    except Exception:
+        logger.exception("rag_search import failed; agent will start without it")
+        rag_search = None
+
+    try:
         from app.mcp.client import tools_context
 
         async with tools_context() as mcp_tools:
+            all_tools = list(mcp_tools)
+            if rag_search is not None:
+                all_tools.append(rag_search)
             try:
-                app.state.agent = await set_agent(mcp_tools=mcp_tools)
+                app.state.agent = await set_agent(mcp_tools=all_tools)
                 logger.info(
-                    "agent singleton ready (mcp_tools=%d)", len(mcp_tools)
+                    "agent singleton ready (tools=%d, mcp=%d, rag=%d)",
+                    len(all_tools),
+                    len(mcp_tools),
+                    1 if rag_search is not None else 0,
                 )
             except Exception:
                 logger.exception("failed to build agent at startup")
@@ -43,9 +55,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.exception(
             "mcp setup failed; starting agent without mcp tools"
         )
+        fallback_tools = [rag_search] if rag_search is not None else []
         try:
-            app.state.agent = await set_agent(mcp_tools=[])
-            logger.info("agent singleton ready (no mcp tools)")
+            app.state.agent = await set_agent(mcp_tools=fallback_tools)
+            logger.info(
+                "agent singleton ready (no mcp tools, rag=%d)",
+                1 if rag_search is not None else 0,
+            )
         except Exception:
             logger.exception("agent build failed")
             app.state.agent = None

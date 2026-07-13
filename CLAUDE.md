@@ -37,17 +37,19 @@ uv run pytest app/tests/test_main.py::test_read_item
 ### `agent/` —— LangChain/LangGraph 智能体
 此包当前**未被 `app/main.py` 引用**，是独立的逻辑：
 - `agent/main.py`：`set_agent()` 工厂函数使用 `langchain.agents.create_agent`（LangChain v1 API）构建一个有状态 Agent，传入 `deepseek_llm`、`CustomAgentState`、Redis checkpointer 以及中文系统提示。
-- `agent/llm/deepseek.py`：实例化 `ChatDeepSeek`，模型名取自环境变量 `MODEL_NAME`。**关键约定**：通过 `load_dotenv("agent/.env")` 显式指定 `.env` 路径，因此无论是从哪个工作目录启动，环境变量文件都必须是 `agent/.env`。
-- `agent/config/redis_config.py`：构造一个全局 redis 连接池（`max_connections=100`、`health_check_interval=30`、`socket_keepalive=True`），并通过 `get_redis_checkpointer()` 返回 `langgraph.checkpoint.redis.aio.AsyncRedisSaver`。checkpointer 配置了 `default_ttl=60` 分钟 + `refresh_on_read=True`。注意注释明确要求 `state_redis_client` **不要** 设置 `decode_responses=True`（LangGraph 需要 bytes）。
+- `agent/llm/deepseek.py`：实例化 `ChatDeepSeek`，模型名取自环境变量 `MODEL_NAME`、温度取自 `LLM_TEMPERATURE`。
+- `agent/config/redis_config.py`：构造一个全局 redis 连接池（参数从 `REDIS_*` 环境变量读，默认 `localhost:6379/db=0`、`max_connections=100`、`health_check_interval=30`、`socket_keepalive=True`），并通过 `get_redis_checkpointer()` 返回 `langgraph.checkpoint.redis.aio.AsyncRedisSaver`。checkpointer 配置从 `REDIS_CHECKPOINT_PREFIX` / `REDIS_CHECKPOINT_TTL_MINUTES` 读，默认 `checkpoints` / 60 分钟 + `refresh_on_read=True`。注意注释明确要求 `state_redis_client` **不要** 设置 `decode_responses=True`（LangGraph 需要 bytes）。
 - `agent/state/main_state.py`：`CustomAgentState(AgentState)`，当前只是占位，扩展 Agent 状态时改这里。
-- Redis 服务地址当前硬编码为 `localhost:6379/db=0`，本地开发需先启动 Redis。
+- Redis 服务本地开发需先启动；连接参数见 `.env` 的 `REDIS_*`。
 
 ### Agent 与 FastAPI 的衔接
 `agent/main.py` 中定义了 `get_agent(request: Request)` 这个 FastAPI 依赖项占位，但尚未挂到任何路由上。若要把 Agent 接入 HTTP 层，应通过 FastAPI 依赖注入 `set_agent()` 的返回值，而不是在请求路径里直接构造。
 
 ## 环境与密钥
-- 所有第三方 key（DeepSeek、LangSmith、Tavily、LangSearch 等）集中在 `agent/.env`；新增依赖外部服务的代码时遵循同一处集中管理。
-- LangSmith tracing 通过 `agent/.env` 中的 `LANGSMITH_*` 变量开启，开发 Agent 时观察链路日志走这里。
+- 所有可配置参数集中在项目根目录 `.env`：第三方 key（DeepSeek、LangSmith、Tavily、LangSearch）、Redis 连接、LLM 模型与温度、Chat API 默认模型与已知模型列表、日志路径与切割阈值、`LOG_LEVEL_THREAD` 诊断级别等。
+- `app/main.py` 启动早期 `load_dotenv(".env")` 加载到 `os.environ`，因此各模块直接 `os.getenv(...)` 读取即可，不要重复 `load_dotenv`。
+- `.env` 用 python-dotenv 解析，**不要**写 `export VAR=...` 前缀，**不要**给值加引号。
+- LangSmith tracing 通过 `LANGSMITH_*` 变量开启，开发 Agent 时观察链路日志走这里。
 
 ## 工作目录约定
 Agent 的系统提示里要求模型在调用 `write_file` / `ls` / `edit_file` 等工具时使用相对路径（不要以 `/` 开头、不要写物理绝对路径）。修改 Agent 相关代码或工具时需要保留这一约定。

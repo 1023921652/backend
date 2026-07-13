@@ -1,10 +1,19 @@
-import json
-from typing import Any
+"""Redis 连接池 + LangGraph checkpointer 工厂。
+
+所有连接参数从环境变量读（.env 已由 app.main load_dotenv 加载），
+未设置时使用合理默认值，方便本地开发。
+
+注意：state_redis_client 不能加 decode_responses=True，LangGraph 需要 bytes。
+"""
+import os
+
 import redis.asyncio as redis
 
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-REDIS_DB = 0
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "100"))
+REDIS_HEALTH_CHECK_INTERVAL = int(os.getenv("REDIS_HEALTH_CHECK_INTERVAL", "30"))
 
 # ==========================================
 # 1. 显式创建连接池 (推荐做法)
@@ -14,10 +23,9 @@ pool = redis.ConnectionPool(
     host=REDIS_HOST,
     port=REDIS_PORT,
     db=REDIS_DB,
-    max_connections=100,  # 生产环境建议设置上限，视服务器配置而定
-    # 🌟 新增下面这两个参数（生产环境必备！）
-    health_check_interval=30,  # 每隔 30 秒向 Redis 发送一个 PING 检查连接是否存活
-    socket_keepalive=True      # 开启底层的 TCP Keep-Alive
+    max_connections=REDIS_MAX_CONNECTIONS,
+    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,  # 每 30s PING 检查连接存活
+    socket_keepalive=True,  # 开启底层 TCP Keep-Alive
 )
 # ==========================================
 # 2. 实例化客户端 (复用同一个池子)
@@ -29,26 +37,19 @@ state_redis_client = redis.Redis(connection_pool=pool)
 
 
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+
+
 async def get_redis_checkpointer():
     try:
         checkpointer = AsyncRedisSaver(
             redis_client=state_redis_client,
-            checkpoint_prefix='checkpoints',
+            checkpoint_prefix=os.getenv("REDIS_CHECKPOINT_PREFIX", "checkpoints"),
             ttl={
-                    "default_ttl": 60,       # 60 分钟 (即 1 小时)
-                    "refresh_on_read": True  # 每次读取/交互时，自动重置倒计时
-                }
+                "default_ttl": int(os.getenv("REDIS_CHECKPOINT_TTL_MINUTES", "60")),
+                "refresh_on_read": True,
+            },
         )
         await checkpointer.asetup()
         return checkpointer
     except Exception as e:
         print(e)
-
-
-
-
-
-
-
-
-

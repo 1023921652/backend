@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import time
 import uuid
 
@@ -16,13 +17,17 @@ from app.schemas.openai_types import (
     ModelObject,
 )
 from app.services.chat_service import nonstream_chat, stream_chat
-
+from app.agent.llm import get_llm
 router = APIRouter(tags=["openai"])
 
 logger = logging.getLogger("thread_id")
 
-DEFAULT_MODEL = "deepseek-chat"
-KNOWN_MODELS = ["deepseek-chat", "deepseek-reasoner"]
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-chat")
+KNOWN_MODELS = [
+    m.strip()
+    for m in os.getenv("KNOWN_MODELS", "deepseek-chat,deepseek-reasoner").split(",")
+    if m.strip()
+]
 
 THREAD_ID_HEADER = "X-Thread-Id"
 OPENWEBUI_CHAT_HEADER = "X-OpenWebUI-Chat-Id"
@@ -59,13 +64,7 @@ def get_agent(request: Request):
     return agent
 
 
-def get_llm():
-    """返回 deepseek_llm 单例，用于 OpenWebUI task 请求的直 LLM 路径。
 
-    通过 Depends 注入便于测试替换；task 请求不走 agent、不写 checkpoint。
-    """
-    from app.agent.llm.deepseek import deepseek_llm
-    return deepseek_llm
 
 
 def _resolve_thread_id(req: ChatCompletionRequest, request: Request) -> tuple[str, str]:
