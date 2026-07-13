@@ -27,25 +27,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("building agent singleton at startup...")
 
     try:
-        from app.rag.document_rag.tools import rag_search
+        from app.rag.document_rag.tools import (
+            rag_decomposed_search,
+            rag_simple_search,
+        )
+        rag_tools = [rag_simple_search, rag_decomposed_search]
     except Exception:
-        logger.exception("rag_search import failed; agent will start without it")
-        rag_search = None
+        logger.exception("rag tools import failed; agent will start without them")
+        rag_tools = []
+
+    rag_count = len(rag_tools)
 
     try:
         from app.mcp.client import tools_context
 
         async with tools_context() as mcp_tools:
-            all_tools = list(mcp_tools)
-            if rag_search is not None:
-                all_tools.append(rag_search)
+            all_tools = list(mcp_tools) + rag_tools
             try:
                 app.state.agent = await set_agent(mcp_tools=all_tools)
                 logger.info(
                     "agent singleton ready (tools=%d, mcp=%d, rag=%d)",
                     len(all_tools),
                     len(mcp_tools),
-                    1 if rag_search is not None else 0,
+                    rag_count,
                 )
             except Exception:
                 logger.exception("failed to build agent at startup")
@@ -55,12 +59,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.exception(
             "mcp setup failed; starting agent without mcp tools"
         )
-        fallback_tools = [rag_search] if rag_search is not None else []
         try:
-            app.state.agent = await set_agent(mcp_tools=fallback_tools)
+            app.state.agent = await set_agent(mcp_tools=list(rag_tools))
             logger.info(
-                "agent singleton ready (no mcp tools, rag=%d)",
-                1 if rag_search is not None else 0,
+                "agent singleton ready (no mcp tools, rag=%d)", rag_count
             )
         except Exception:
             logger.exception("agent build failed")
