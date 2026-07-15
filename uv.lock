@@ -236,6 +236,7 @@ dependencies = [
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langchainhub" },
+    { name = "langdetect" },
     { name = "langgraph-checkpoint-redis" },
     { name = "openai" },
     { name = "pwdlib", extra = ["argon2"] },
@@ -264,6 +265,7 @@ requires-dist = [
     { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
     { name = "langchain-openai", specifier = ">=1.3.3" },
     { name = "langchainhub", specifier = ">=0.1.21" },
+    { name = "langdetect", specifier = ">=1.0.9" },
     { name = "langgraph-checkpoint-redis", specifier = ">=0.3.6" },
     { name = "openai", specifier = ">=2.43.0" },
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.3.0" },
@@ -1474,6 +1476,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/71/50/76719d356d80b0076
 wheels = [
     { url = "https://files.pythonhosted.org/packages/35/63/40328157ddee807991f2f1992c2ad88f479b2472dc9e40d08ccf10700735/langchainhub-0.1.21-py3-none-any.whl", hash = "sha256:1cc002dc31e0d132a776afd044361e2b698743df5202618cf2bad399246b895f", size = 5203, upload-time = "2024-08-11T20:21:40.892Z" },
 ]
+
+[[package]]
+name = "langdetect"
+version = "1.0.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/72/a3add0e4eec4eb9e2569554f7c70f4a3c27712f40e3284d483e88094cc0e/langdetect-1.0.9.tar.gz", hash = "sha256:cbc1fef89f8d062739774bd51eda3da3274006b3661d199c2655f6b3f6d605a0", size = 981474, upload-time = "2021-05-07T07:54:13.562Z" }
 
 [[package]]
 name = "langgraph"

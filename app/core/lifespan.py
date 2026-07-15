@@ -29,9 +29,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         from app.rag.document_rag.tools import (
             rag_decomposed_search,
+            rag_fulltext_search,
             rag_simple_search,
         )
-        rag_tools = [rag_simple_search, rag_decomposed_search]
+        rag_tools = [rag_simple_search, rag_decomposed_search, rag_fulltext_search]
     except Exception:
         logger.exception("rag tools import failed; agent will start without them")
         rag_tools = []
