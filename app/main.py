@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.api.v1.chat import router as chat_router
+from app.api.v1.contextual_rag import router as contextual_rag_router
 from app.api.v1.rag import router as rag_router
 from app.core.errors import register_exception_handlers
 from app.core.lifespan import lifespan
@@ -54,6 +55,7 @@ register_exception_handlers(app)
 # ==========================================
 app.include_router(chat_router)
 app.include_router(rag_router)
+app.include_router(contextual_rag_router)
 
 
 # ==========================================
