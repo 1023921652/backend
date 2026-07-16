@@ -96,11 +96,26 @@ async def create_item(item: Item, x_token: Annotated[str, Header()]) -> Item:
 
 @app.get("/health", tags=["health"])
 async def health():
-    """健康检查：agent 是否就绪。"""
-    return {
-        "status": "ok",
-        "agent_ready": getattr(app.state, "agent", None) is not None,
-    }
+    """Liveness probe：进程能响应即 200。
+
+    不检查任何外部依赖（Redis / Milvus / LLM），避免外部抖动导致 pod 被重启。
+    k8s livenessProbe 用这个；失败 → 重启 pod。
+    """
+    return {"status": "ok"}
+
+
+@app.get("/ready", tags=["health"])
+async def ready():
+    """Readiness probe：agent 单例构造完成才 200，否则 503。
+
+    只校验本 pod 的 lifespan 是否走完。不 ping Redis/Milvus：它们 down 时
+    所有 pod 会同时 not-ready，反而造成全局不可用。外部依赖故障让具体请求
+    自己报错（/v1/rag/* 走 503，chat 走错误 chunk 或 5xx），pod 仍接流量。
+    k8s readinessProbe 用这个；失败 → 从 Service 摘除但不重启。
+    """
+    if getattr(app.state, "agent", None) is None:
+        raise HTTPException(status_code=503, detail="agent not initialized")
+    return {"status": "ready"}
 
 
 if __name__ == "__main__":
