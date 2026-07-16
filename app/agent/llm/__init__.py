@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # provider 名 -> 构造函数（懒加载：未选中的 provider 不会被 import / 实例化）
 _REGISTRY: dict[str, Callable[[], BaseChatModel]] = {
     "deepseek": lambda: _import_attr("app.agent.llm.deepseek", "deepseek_llm"),
+    "dashscope": lambda: _import_attr("app.agent.llm.dashscope", "dashscope_llm"),
 }
 
 

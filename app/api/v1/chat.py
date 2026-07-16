@@ -16,7 +16,7 @@ from app.schemas.openai_types import (
     ModelList,
     ModelObject,
 )
-from app.services.chat_service import nonstream_chat, stream_chat
+from app.services.chat_service import content_to_text, nonstream_chat, stream_chat
 from app.agent.llm import get_llm
 router = APIRouter(tags=["openai"])
 
@@ -47,11 +47,19 @@ def _content_fingerprint(messages) -> str | None:
     已知 corner case：两个不同窗口首条消息完全相同（含标点/空格）会串话。
     归一化（strip+lower+截 256 字符）能容忍大小写/前后空白差异，但无法解决
     完全相同开场。
+
+    多模态兼容：content 可能是 list[dict]（OpenWebUI 发图时），先经
+    content_to_text 提取 text 部分，丢弃 image_url 等多模态 part，
+    避免把 base64 图片数据纳入哈希（既不稳定也浪费算力）。
     """
     for m in messages or []:
-        if getattr(m, "role", None) == "user" and m.content:
-            normalized = m.content.strip().lower()[:256]
-            return "fp-" + hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+        if getattr(m, "role", None) != "user":
+            continue
+        text = content_to_text(m.content)
+        if not text:
+            continue
+        normalized = text.strip().lower()[:256]
+        return "fp-" + hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
     return None
 
 

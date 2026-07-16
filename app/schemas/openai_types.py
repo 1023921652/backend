@@ -14,9 +14,19 @@ from pydantic import BaseModel, Field
 # 请求
 # ==========================================
 class ChatMessage(BaseModel):
-    """单条消息。tool 角色当前不支持（agent tools=[]）。"""
+    """单条消息。tool 角色当前不支持（agent tools=[]）。
+
+    content 支持 OpenAI 多模态 parts 格式：
+    - str：纯文本（传统形态）
+    - list[dict]：parts 数组，每项形如 {"type": "text", "text": "..."} 或
+      {"type": "image_url", "image_url": {"url": "..."}}。OpenWebUI 发图片时
+      走此形态。
+
+    下游使用前必须先经 chat_service.content_to_text 归一化（除非确实需要
+    透传多模态 part 给 vision 模型，如 _map_messages 给 HumanMessage 的处理）。
+    """
     role: Literal["system", "user", "assistant", "tool"]
-    content: Optional[str] = None
+    content: Optional[str | list[dict]] = None
     name: Optional[str] = None
 
 
