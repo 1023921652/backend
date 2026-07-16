@@ -182,8 +182,9 @@ async def stream_chat(agent, llm, req: ChatCompletionRequest, thread_id: str) ->
     created = int(time.time())
     model = req.model
     first = True
-
-    if is_openwebui_task(req.messages):
+    # 此处，如果openwebui的task（RAG任务）是流式的，也交给agent处理，title，tag，追加问题都不是流式的
+    # if is_openwebui_task(req.messages):
+    if False:
         # task → 直接 LLM 流式
         lc_msgs = _map_messages(_take_last(req.messages))
         parts: list[str] = []

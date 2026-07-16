@@ -149,6 +149,7 @@ def ingest_documents(documents: list[DocumentInput]) -> IngestStats:
             step=CHUNK_STEP,
         )
         # chapter 全文作为 situate_context 的 "doc" 输入
+        # 不是文档的全文作用doc输入
         chapter_full_text = "\n".join(meta["paragraphs"])
 
         for idx, chunk_text in enumerate(chunks):
