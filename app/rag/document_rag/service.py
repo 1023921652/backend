@@ -34,8 +34,8 @@ from app.rag.document_rag.config import (
     TOP_DOCS,
 )
 from app.rag.document_rag.language import detect_language
-from app.rag.document_rag.milvus_client import get_milvus_client
-from app.rag.document_rag.schemas import ensure_collections
+from app.rag.document_rag.milvus_client import get_async_milvus_client, get_milvus_client
+from app.rag.document_rag.schemas import aensure_collections, ensure_collections
 from app.rag.embedding import embeddings
 from app.schemas.rag_types import (
     ChapterOut,
@@ -584,6 +584,412 @@ def delete_collections(collection_names: list[str]) -> DeleteCollectionsResult:
             logger.info("dropped collection: %s", name)
         except Exception as e:
             logger.exception("drop_collection failed: %s", name)
+            failed.append({"name": name, "error": f"{type(e).__name__}: {e}"})
+
+    return DeleteCollectionsResult(deleted=deleted, failed=failed)
+
+
+# ==========================================================
+# ASYNC 实现（与上方 sync 函数一一对应）
+#
+# 设计原则：
+# - 命名 `axxx` 与 sync 版完全对应，参数列表一致（client 类型不同）
+# - 业务逻辑（分组、聚合、过滤）零改动，仅 IO 调用改 `await`
+# - sync 版保留：脚本、测试、未来 CLI 工具仍可用
+# - _aggregate_to_doc_results 加 _aaggregate 版本（因内部有 repo 调用）
+# ==========================================================
+async def aingest_documents(documents: list[DocumentInput]) -> IngestStats:
+    """ingest_documents 的 async 版本。"""
+    client = await get_async_milvus_client()
+    await aensure_collections(client)
+
+    grouped: dict[str, dict] = {}
+    for doc in documents:
+        doc_title, chap_title = _split_title(doc.title)
+        document_id = _make_document_id(doc_title)
+        grouped.setdefault(doc_title, {"document_id": document_id, "chapters": []})
+        grouped[doc_title]["chapters"].append(
+            {
+                "chapter_id": int(doc.chapter_id),
+                "chapter_title": chap_title,
+                "paragraphs": list(doc.paragraphs),
+            }
+        )
+
+    chapter_rows: list[dict] = []
+    flat_meta: list[dict] = []
+    for doc_title, data in grouped.items():
+        document_id = data["document_id"]
+        for ch in data["chapters"]:
+            full_text = "\n".join(ch["paragraphs"])
+            language = detect_language(full_text)
+            chapter_rows.append(
+                {
+                    "chapter_id": ch["chapter_id"],
+                    "document_id": document_id,
+                    "document_title": doc_title,
+                    "chapter_title": ch["chapter_title"],
+                    "chapter_text": full_text,
+                    "language": language,
+                    "char_count": len(full_text),
+                }
+            )
+            flat_meta.append(
+                {
+                    "document_id": document_id,
+                    "document_title": doc_title,
+                    "chapter_id": ch["chapter_id"],
+                    "chapter_title": ch["chapter_title"],
+                    "paragraphs": ch["paragraphs"],
+                }
+            )
+
+    inserted_chapters = await repo.ainsert_chapters(client, chapter_rows)
+
+    sentence_meta: list[dict] = []
+    sentence_texts: list[str] = []
+    for meta in flat_meta:
+        chunks = chunk_by_sentences(
+            meta["paragraphs"], window_size=CHUNK_WINDOW_SIZE, step=CHUNK_STEP
+        )
+        for idx, chunk_text in enumerate(chunks):
+            sentence_texts.append(chunk_text)
+            sentence_meta.append(
+                {
+                    "chunk_text": chunk_text,
+                    "document_id": meta["document_id"],
+                    "chapter_id": meta["chapter_id"],
+                    "chunk_index": idx,
+                    "char_count": len(chunk_text),
+                    "document_title": meta["document_title"],
+                    "chapter_title": meta["chapter_title"],
+                }
+            )
+
+    if not sentence_texts:
+        return IngestStats(inserted_chapters=inserted_chapters, inserted_sentences=0)
+
+    logger.info("[async] embedding %d chunks...", len(sentence_texts))
+    vectors = await embeddings.aembed_documents(sentence_texts)
+
+    sentence_rows = [{**meta, "dense_vector": vec} for meta, vec in zip(sentence_meta, vectors)]
+    inserted_sentences = await repo.ainsert_sentences(client, sentence_rows)
+
+    logger.info(
+        "[async] ingest done: chapters=%d sentences=%d",
+        inserted_chapters, inserted_sentences,
+    )
+    return IngestStats(
+        inserted_chapters=inserted_chapters, inserted_sentences=inserted_sentences
+    )
+
+
+async def ahierarchical_search(query: str) -> list[SearchResult]:
+    """hierarchical_search 的 async 版本。"""
+    logger.info(
+        "[async] hierarchical_search START query=%r params(search_limit=%d, top_docs=%d, "
+        "char_threshold=%d, top_chapters=%d)",
+        query, SEARCH_LIMIT, TOP_DOCS, CHAR_COUNT_THRESHOLD, TOP_CHAPTERS,
+    )
+
+    client = await get_async_milvus_client()
+    instruct_query = f"Instruct: 查询相关概念\\nQuery: {query}"
+    query_vec = await embeddings.aembed_query(instruct_query)
+
+    hits = await repo.asearch_sentences(client, query_vec, limit=SEARCH_LIMIT)
+    logger.info("[async] hierarchical_search milvus returned %d sentence hits", len(hits))
+    if not hits:
+        return []
+
+    doc_scores: dict[int, float] = {}
+    doc_titles: dict[int, str] = {}
+    doc_hits: dict[int, list[SentenceHit]] = defaultdict(list)
+    chap_scores: dict[int, dict[int, float]] = defaultdict(dict)
+
+    for h in hits:
+        entity = h.get("entity", {}) or {}
+        score = float(h.get("distance", 0.0))
+        doc_id = entity.get("document_id")
+        chap_id = entity.get("chapter_id")
+        chunk_text = entity.get("chunk_text", "")
+        if doc_id is None or chap_id is None:
+            continue
+        doc_scores[doc_id] = max(doc_scores.get(doc_id, score), score)
+        doc_titles.setdefault(doc_id, entity.get("document_title", ""))
+        doc_hits[doc_id].append(
+            SentenceHit(chapter_id=chap_id, chunk_text=chunk_text, score=score)
+        )
+        chap_scores[doc_id][chap_id] = max(
+            chap_scores[doc_id].get(chap_id, score), score
+        )
+
+    top_docs = sorted(doc_scores.keys(), key=lambda d: doc_scores[d], reverse=True)[:TOP_DOCS]
+
+    results = await _aaggregate_to_doc_results(
+        client=client,
+        doc_scores=doc_scores,
+        doc_titles=doc_titles,
+        doc_hits=doc_hits,
+        chap_scores=chap_scores,
+        top_docs=top_docs,
+        retrieval_mode=RETRIEVAL_MODE_DENSE,
+        with_sentence_hits=True,
+        log_prefix="[async] hierarchical_search",
+    )
+    return results
+
+
+async def _aaggregate_to_doc_results(
+    *,
+    client,
+    doc_scores: dict[int, float],
+    doc_titles: dict[int, str],
+    doc_hits: dict[int, list[SentenceHit]],
+    chap_scores: dict[int, dict[int, float]],
+    top_docs: list[int],
+    retrieval_mode: str,
+    with_sentence_hits: bool,
+    log_prefix: str,
+) -> list[SearchResult]:
+    """_aggregate_to_doc_results 的 async 版本（内部 repo 调用走 async）。"""
+    results: list[SearchResult] = []
+    for doc_id in top_docs:
+        chapters = await repo.aquery_chapters_by_document(client, doc_id)
+        if not chapters:
+            logger.warning("%s doc_id=%d has no chapter rows, skip", log_prefix, doc_id)
+            continue
+
+        doc_char_count = sum(ch.get("char_count", 0) for ch in chapters)
+        document_title = chapters[0].get(
+            "document_title", doc_titles.get(doc_id, "")
+        )
+
+        if doc_char_count < CHAR_COUNT_THRESHOLD:
+            selected = sorted(chapters, key=lambda c: c.get("chapter_id", 0))
+            mode_detail = (
+                f"整篇文档返回模式 (全文字数 {doc_char_count} < {CHAR_COUNT_THRESHOLD})"
+            )
+        else:
+            scored = sorted(
+                chapters,
+                key=lambda c: chap_scores[doc_id].get(c.get("chapter_id"), 0.0),
+                reverse=True,
+            )[:TOP_CHAPTERS]
+            selected = sorted(scored, key=lambda c: c.get("chapter_id", 0))
+            mode_detail = (
+                f"最高评分{TOP_CHAPTERS}章节返回模式 (全文字数 {doc_char_count} "
+                f">= {CHAR_COUNT_THRESHOLD})"
+            )
+        mode = f"[{retrieval_mode}] {mode_detail}"
+
+        sentence_hits = doc_hits.get(doc_id, []) if with_sentence_hits else []
+        logger.info(
+            "%s doc_id=%d title=%r chars=%d mode=%s chapters_selected=%d "
+            "sentence_hits=%d",
+            log_prefix, doc_id, document_title, doc_char_count, mode,
+            len(selected), len(sentence_hits),
+        )
+
+        chapter_outs = [
+            ChapterOut(
+                chapter_id=int(c.get("chapter_id", 0)),
+                chapter_title=c.get("chapter_title", ""),
+                chapter_text=c.get("chapter_text", ""),
+                char_count=int(c.get("char_count", 0)),
+            )
+            for c in selected
+        ]
+
+        results.append(
+            SearchResult(
+                document_id=doc_id,
+                document_title=document_title,
+                document_score=doc_scores[doc_id],
+                char_count=doc_char_count,
+                retrieval_mode=mode,
+                chapters=chapter_outs,
+                sentence_hits=sentence_hits,
+            )
+        )
+    return results
+
+
+async def afulltext_search(query: str) -> list[SearchResult]:
+    """fulltext_search 的 async 版本（BM25 路径不调 embedding）。"""
+    logger.info(
+        "[async] fulltext_search START query=%r params(bm25_search_limit=%d, top_docs=%d, "
+        "char_threshold=%d, top_chapters=%d)",
+        query, BM25_SEARCH_LIMIT, TOP_DOCS, CHAR_COUNT_THRESHOLD, TOP_CHAPTERS,
+    )
+
+    client = await get_async_milvus_client()
+    analyzer_name = detect_language(query)
+    hits = await repo.asearch_chapters_by_bm25(client, query, BM25_SEARCH_LIMIT, analyzer_name)
+    logger.info("[async] fulltext_search milvus returned %d chapter hits", len(hits))
+    if not hits:
+        return []
+
+    doc_scores: dict[int, float] = {}
+    doc_titles: dict[int, str] = {}
+    chap_scores: dict[int, dict[int, float]] = defaultdict(dict)
+
+    for h in hits:
+        entity = h.get("entity", {}) or {}
+        score = float(h.get("distance", 0.0))
+        doc_id = entity.get("document_id")
+        chap_id = entity.get("chapter_id")
+        if doc_id is None or chap_id is None:
+            continue
+        doc_scores[doc_id] = max(doc_scores.get(doc_id, score), score)
+        doc_titles.setdefault(doc_id, entity.get("document_title", ""))
+        chap_scores[doc_id][chap_id] = max(
+            chap_scores[doc_id].get(chap_id, score), score
+        )
+
+    top_docs = sorted(
+        doc_scores.keys(), key=lambda d: doc_scores[d], reverse=True
+    )[:TOP_DOCS]
+
+    results = await _aaggregate_to_doc_results(
+        client=client,
+        doc_scores=doc_scores,
+        doc_titles=doc_titles,
+        doc_hits=defaultdict(list),
+        chap_scores=chap_scores,
+        top_docs=top_docs,
+        retrieval_mode=RETRIEVAL_MODE_FULLTEXT,
+        with_sentence_hits=False,
+        log_prefix="[async] fulltext_search",
+    )
+    return results
+
+
+async def alist_documents() -> list[DocumentSummary]:
+    """list_documents 的 async 版本。"""
+    client = await get_async_milvus_client()
+    rows = await repo.aquery_all_chapters(client)
+
+    agg: dict[int, dict] = {}
+    for r in rows:
+        doc_id = r.get("document_id")
+        if doc_id is None:
+            continue
+        agg.setdefault(
+            doc_id,
+            {
+                "document_title": r.get("document_title", ""),
+                "chapter_count": 0,
+                "total_chars": 0,
+            },
+        )
+        agg[doc_id]["chapter_count"] += 1
+        agg[doc_id]["total_chars"] += int(r.get("char_count", 0))
+
+    return [
+        DocumentSummary(
+            document_id=doc_id,
+            document_title=data["document_title"],
+            chapter_count=data["chapter_count"],
+            total_chars=data["total_chars"],
+        )
+        for doc_id, data in sorted(
+            agg.items(), key=lambda kv: kv[1]["document_title"]
+        )
+    ]
+
+
+async def adelete_document(document_id: int) -> DeleteStats:
+    """delete_document 的 async 版本。
+
+    注意：sentence count 用 client.aquery 直接查（不经 repo），与 sync 版一致。
+    """
+    client = await get_async_milvus_client()
+    doc_id = int(document_id)
+
+    chapters_before = await repo.aquery_chapters_by_document(client, doc_id)
+    deleted_chapters = len(chapters_before)
+
+    sentences_before = await client.query(
+        collection_name=SENTENCE_COLL,
+        filter=f"document_id == {doc_id}",
+        output_fields=["document_id"],
+    )
+    deleted_sentences = len(sentences_before)
+
+    await repo.adelete_sentences_by_document(client, doc_id)
+    await repo.adelete_chapters_by_document(client, doc_id)
+
+    logger.info(
+        "[async] deleted document_id=%d: chapters=%d sentences=%d",
+        doc_id, deleted_chapters, deleted_sentences,
+    )
+
+    return DeleteStats(
+        document_id=doc_id,
+        deleted_chapters=deleted_chapters,
+        deleted_sentences=deleted_sentences,
+    )
+
+
+async def adelete_documents(document_ids: list[int]) -> list[DeleteStats]:
+    """delete_documents 的 async 版本；单项失败不中断。"""
+    results: list[DeleteStats] = []
+    for doc_id in document_ids:
+        try:
+            results.append(await adelete_document(doc_id))
+        except Exception:
+            logger.exception("[async] delete_document failed: document_id=%s", doc_id)
+            results.append(
+                DeleteStats(
+                    document_id=int(doc_id),
+                    deleted_chapters=0,
+                    deleted_sentences=0,
+                )
+            )
+    return results
+
+
+async def alist_collections() -> list[CollectionInfo]:
+    """list_collections 的 async 版本。"""
+    client = await get_async_milvus_client()
+    rag_set = {CHAPTER_COLL, SENTENCE_COLL}
+
+    names = await repo.alist_collections(client)
+    infos: list[CollectionInfo] = []
+    for name in names:
+        try:
+            row_count = await repo.aget_collection_row_count(client, name)
+        except Exception:
+            logger.exception("[async] get_collection_stats failed: %s", name)
+            row_count = -1
+        infos.append(
+            CollectionInfo(
+                name=name,
+                row_count=row_count,
+                is_rag_collection=name in rag_set,
+            )
+        )
+
+    infos.sort(key=lambda c: (not c.is_rag_collection, c.name))
+    return infos
+
+
+async def adelete_collections(collection_names: list[str]) -> DeleteCollectionsResult:
+    """delete_collections 的 async 版本。"""
+    client = await get_async_milvus_client()
+    deleted: list[str] = []
+    failed: list[dict] = []
+
+    for name in collection_names:
+        try:
+            if not await repo.ahas_collection(client, name):
+                failed.append({"name": name, "error": "collection not found"})
+                continue
+            await repo.adrop_collection(client, name)
+            deleted.append(name)
+            logger.info("[async] dropped collection: %s", name)
+        except Exception as e:
+            logger.exception("[async] drop_collection failed: %s", name)
             failed.append({"name": name, "error": f"{type(e).__name__}: {e}"})
 
     return DeleteCollectionsResult(deleted=deleted, failed=failed)

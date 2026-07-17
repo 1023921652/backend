@@ -22,6 +22,7 @@ from app.core.errors import register_exception_handlers
 from app.core.lifespan import lifespan
 from app.core.logging import setup_logging
 from app.core.middleware import RequestIdMiddleware
+from app.core.rate_limit import register_rate_limiter
 
 # 启动前先初始化日志（此时 LOG_DIR / LOG_LEVEL_THREAD 等已就绪）
 setup_logging()
@@ -49,6 +50,7 @@ app.add_middleware(RequestIdMiddleware)
 # 异常处理（按路径前缀分流错误格式）
 # ==========================================
 register_exception_handlers(app)
+register_rate_limiter(app)
 
 # ==========================================
 # OpenAI 兼容路由

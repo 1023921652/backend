@@ -1,15 +1,16 @@
 """LangChain Tool 包装：让 agent 能调用 RAG 检索。
 
-三个工具：
+三个工具（全部 async，由 langgraph agent 直接 await）：
 - rag_simple_search：dense vector 单查询直查（语义/概念类简单问题）
-- rag_decomposed_search：LLM 拆分子查询后多路 dense 检索再合并（复杂比较类问题）
+- rag_decomposed_search：LLM 拆分子查询后多路 dense 并行检索再合并（复杂比较类问题）
 - rag_fulltext_search：BM25 关键词检索（精确术语/型号/ID 字面匹配）
 
-均为同步函数（@tool 默认）；agent 通过 create_agent 自动识别。
-milvus / embedding / llm 调用都是同步阻塞，不引入 async 复杂度。
+milvus / embedding / llm 调用全走 async，避免 threadpool 切换；
+rag_decomposed_search 的多路子查询用 asyncio.gather 并行。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -18,8 +19,8 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from app.agent.llm import get_llm
-from app.rag.document_rag.config import MAX_SUBQUERIES, TOP_DOCS
-from app.rag.document_rag.service import fulltext_search, hierarchical_search
+from app.rag.document_rag.config import MAX_SUBQUERIES
+from app.rag.document_rag.service import afulltext_search, ahierarchical_search
 from app.schemas.rag_types import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def _format_results(results) -> str:
 # 简单单查询工具
 # ==========================================
 @tool
-def rag_simple_search(query: str) -> str:
+async def rag_simple_search(query: str) -> str:
     """检索单一对象的简单查询：直接送入向量库召回最相关文档。
 
     适用：单一主题的事实/概念查询（如"什么是大语言模型"、"BM25 是什么"）。
@@ -65,7 +66,7 @@ def rag_simple_search(query: str) -> str:
     """
     logger.info("rag_simple_search called: query=%r", query)
     try:
-        results = hierarchical_search(query)
+        results = await ahierarchical_search(query)
     except Exception as e:
         logger.exception("rag_simple_search failed")
         return f"（RAG 检索失败: {type(e).__name__}: {e}）"
@@ -78,7 +79,7 @@ def rag_simple_search(query: str) -> str:
 # 关键词 / 术语精确匹配工具（BM25）
 # ==========================================
 @tool
-def rag_fulltext_search(query: str) -> str:
+async def rag_fulltext_search(query: str) -> str:
     """关键词 / 术语精确匹配检索：基于 BM25 全文检索（字面命中），与 rag_simple_search（语义向量召回）互补。
 
     适用：
@@ -97,7 +98,7 @@ def rag_fulltext_search(query: str) -> str:
     """
     logger.info("rag_fulltext_search called: query=%r", query)
     try:
-        results = fulltext_search(query)
+        results = await afulltext_search(query)
     except Exception as e:
         logger.exception("rag_fulltext_search failed")
         return f"（BM25 全文检索失败: {type(e).__name__}: {e}）"
@@ -146,8 +147,8 @@ _DECOMPOSE_PROMPT = """你是一个查询简化助手。你的任务是将用户
 """
 
 
-def _decompose(query: str, max_n: int) -> tuple[list[str], str]:
-    """调 LLM 把复杂 query 拆成 (sub_questions, fallback_question)。
+async def _adecompose(query: str, max_n: int) -> tuple[list[str], str]:
+    """_decompose 的 async 版本；调 LLM 拆分复杂 query。
 
     LLM 失败 / JSON 解析失败 → 返回 ([], "")，调用方决定 fallback。
     """
@@ -157,11 +158,10 @@ def _decompose(query: str, max_n: int) -> tuple[list[str], str]:
         .replace("__MAX_N__", str(max_n))
         .replace("__QUERY__", query)
     )
-    resp = llm.invoke([HumanMessage(content=prompt)])
+    resp = await llm.ainvoke([HumanMessage(content=prompt)])
     raw = getattr(resp, "content", "") or ""
 
     # 兼容 LLM 偶尔输出 markdown ```json ... ``` 围栏
-    # 启用 re.DOTALL 后：点号 . 的神奇之处在于，它会匹配包括换行符 \n 在内的所有字符。
     m = re.search(r"\{.*}", raw, re.DOTALL)
     candidate = m.group(0) if m else raw.strip()
     try:
@@ -210,7 +210,7 @@ def _merge_results(result_lists: list[list[SearchResult]]) -> list[SearchResult]
 
 
 @tool
-def rag_decomposed_search(query: str) -> str:
+async def rag_decomposed_search(query: str) -> str:
     """复杂问题检索：先用 LLM 把复杂查询拆解（查询分解 + 回退生成两种策略），分别检索自建 RAG 知识库后合并去重。
 
     策略：
@@ -230,7 +230,7 @@ def rag_decomposed_search(query: str) -> str:
     """
     logger.info("rag_decomposed_search called: query=%r", query)
 
-    sub_queries, fallback_q = _decompose(query, MAX_SUBQUERIES)
+    sub_queries, fallback_q = await _adecompose(query, MAX_SUBQUERIES)
 
     if not sub_queries and not fallback_q:
         logger.warning("decompose failed; fallback to direct search")
@@ -239,7 +239,7 @@ def rag_decomposed_search(query: str) -> str:
             query,
         )
         try:
-            return _format_results(hierarchical_search(query))
+            return _format_results(await ahierarchical_search(query))
         except Exception as e:
             return f"（RAG 检索失败: {type(e).__name__}: {e}）"
 
@@ -248,23 +248,26 @@ def rag_decomposed_search(query: str) -> str:
         sub_queries, fallback_q,
     )
 
-    # 子问题 + 回退问题一起检索
+    # 子问题 + 回退问题并行检索（asyncio.gather），不再串行
     queries_with_tag: list[tuple[str, str]] = [
         (sq, "sub_query") for sq in sub_queries
     ]
     if fallback_q:
         queries_with_tag.append((fallback_q, "fallback"))
 
-    all_results: list[list[SearchResult]] = []
-    for q, tag in queries_with_tag:
+    async def _safe_search(q: str, tag: str) -> list[SearchResult]:
         try:
-            rs = hierarchical_search(q)
-            all_results.append(rs)
-            logger.info(
-                "rag_decomposed_search %s=%r hits=%d", tag, q, len(rs)
-            )
+            rs = await ahierarchical_search(q)
+            logger.info("rag_decomposed_search %s=%r hits=%d", tag, q, len(rs))
+            return rs
         except Exception:
             logger.exception("%s search failed: %s", tag, q)
+            return []
+
+    batch = await asyncio.gather(
+        *[_safe_search(q, tag) for q, tag in queries_with_tag]
+    )
+    all_results = [r for r in batch if r]
 
     if not all_results:
         return "（RAG 子查询与回退问题全部失败，无结果）"

@@ -158,3 +158,40 @@ def ensure_collections(client) -> None:
         )
 
     logger.info("collections ready")
+
+
+async def aensure_collections(client) -> None:
+    """ensure_collections 的 async 版本；接受 AsyncMilvusClient。
+
+    schema / index 构造函数本身是同步纯函数（只在内存构造对象，不触发 IO），
+    所以 _build_chapter_schema / _chapter_index_params 可以直接复用，无需 async 版。
+    """
+    chapter_ok = await client.has_collection(CHAPTER_COLL)
+    sentence_ok = await client.has_collection(SENTENCE_COLL)
+    if chapter_ok and sentence_ok:
+        logger.info(
+            "collections already exist: %s, %s (incremental insert)",
+            CHAPTER_COLL,
+            SENTENCE_COLL,
+        )
+        return
+
+    if not chapter_ok:
+        logger.info("creating collection (async): %s", CHAPTER_COLL)
+        await client.create_collection(
+            collection_name=CHAPTER_COLL,
+            schema=_build_chapter_schema(),
+            index_params=_chapter_index_params(client),
+            consistency_level=CONSISTENCY_LEVEL,
+        )
+
+    if not sentence_ok:
+        logger.info("creating collection (async): %s", SENTENCE_COLL)
+        await client.create_collection(
+            collection_name=SENTENCE_COLL,
+            schema=_build_sentence_schema(),
+            index_params=_sentence_index_params(client),
+            consistency_level=CONSISTENCY_LEVEL,
+        )
+
+    logger.info("collections ready (async)")

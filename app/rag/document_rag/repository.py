@@ -2,24 +2,39 @@
 
 不处理业务逻辑（去重、分组、聚合）——那是 service.py 的事。
 所有 chapter 相关查询都用 document_id 过滤（chapter_id 文档内唯一，不保证全局唯一）。
+
+两套实现：
+- sync 版（`xxx`）：接受 `MilvusClient`，给脚本 / 测试用
+- async 版（`axxx`）：接受 `AsyncMilvusClient`，给 async service / endpoint 用
+
+业务参数完全一致，仅 client 类型 + `async/await` 差别。
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from pymilvus import MilvusClient
+from pymilvus import AsyncMilvusClient, MilvusClient
 
 from app.rag.document_rag.config import CHAPTER_COLL, SENTENCE_COLL
 
 logger = logging.getLogger(__name__)
 
 
-# ============ insert ============
+# ==========================================
+# insert
+# ==========================================
 def insert_chapters(client: MilvusClient, rows: list[dict]) -> int:
     if not rows:
         return 0
     client.insert(collection_name=CHAPTER_COLL, data=rows)
+    return len(rows)
+
+
+async def ainsert_chapters(client: AsyncMilvusClient, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    await client.insert(collection_name=CHAPTER_COLL, data=rows)
     return len(rows)
 
 
@@ -30,7 +45,16 @@ def insert_sentences(client: MilvusClient, rows: list[dict]) -> int:
     return len(rows)
 
 
-# ============ query / search ============
+async def ainsert_sentences(client: AsyncMilvusClient, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    await client.insert(collection_name=SENTENCE_COLL, data=rows)
+    return len(rows)
+
+
+# ==========================================
+# query / search
+# ==========================================
 def search_sentences(
     client: MilvusClient,
     query_vector: list[float],
@@ -57,12 +81,56 @@ def search_sentences(
     return res[0]
 
 
+async def asearch_sentences(
+    client: AsyncMilvusClient,
+    query_vector: list[float],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """search_sentences 的 async 版本。"""
+    res = await client.search(
+        collection_name=SENTENCE_COLL,
+        data=[query_vector],
+        anns_field="dense_vector",
+        search_params={"metric_type": "COSINE"},
+        limit=limit,
+        output_fields=[
+            "document_id",
+            "chapter_id",
+            "chunk_text",
+            "chunk_index",
+            "document_title",
+            "chapter_title",
+        ],
+    )
+    if not res:
+        return []
+    return res[0]
+
+
 def query_chapters_by_document(
     client: MilvusClient,
     document_id: int,
 ) -> list[dict[str, Any]]:
     """按 document_id 反查所有 chapter 记录。"""
     return client.query(
+        collection_name=CHAPTER_COLL,
+        filter=f"document_id == {int(document_id)}",
+        output_fields=[
+            "chapter_id",
+            "chapter_title",
+            "chapter_text",
+            "char_count",
+            "document_title",
+        ],
+    )
+
+
+async def aquery_chapters_by_document(
+    client: AsyncMilvusClient,
+    document_id: int,
+) -> list[dict[str, Any]]:
+    """query_chapters_by_document 的 async 版本。"""
+    return await client.query(
         collection_name=CHAPTER_COLL,
         filter=f"document_id == {int(document_id)}",
         output_fields=[
@@ -113,6 +181,36 @@ def search_chapters_by_bm25(
     return res[0]
 
 
+async def asearch_chapters_by_bm25(
+    client: AsyncMilvusClient,
+    query_text: str,
+    limit: int,
+    analyzer_name: str = "default",
+) -> list[dict[str, Any]]:
+    """search_chapters_by_bm25 的 async 版本。"""
+    res = await client.search(
+        collection_name=CHAPTER_COLL,
+        data=[query_text],
+        anns_field="sparse_vector",
+        search_params={
+            "metric_type": "BM25",
+            "analyzer_name": analyzer_name,
+        },
+        limit=limit,
+        output_fields=[
+            "document_id",
+            "chapter_id",
+            "document_title",
+            "chapter_title",
+            "chapter_text",
+            "char_count",
+        ],
+    )
+    if not res:
+        return []
+    return res[0]
+
+
 def query_all_chapters(client: MilvusClient) -> list[dict[str, Any]]:
     """全表扫描所有 chapter；用于 list_documents 在内存聚合 document 维度。
 
@@ -131,9 +229,32 @@ def query_all_chapters(client: MilvusClient) -> list[dict[str, Any]]:
     )
 
 
-# ============ delete ============
+async def aquery_all_chapters(client: AsyncMilvusClient) -> list[dict[str, Any]]:
+    """query_all_chapters 的 async 版本。"""
+    return await client.query(
+        collection_name=CHAPTER_COLL,
+        filter="document_id >= 0",
+        output_fields=[
+            "document_id",
+            "document_title",
+            "chapter_id",
+            "char_count",
+        ],
+    )
+
+
+# ==========================================
+# delete
+# ==========================================
 def delete_chapters_by_document(client: MilvusClient, document_id: int) -> None:
     client.delete(
+        collection_name=CHAPTER_COLL,
+        filter=f"document_id == {int(document_id)}",
+    )
+
+
+async def adelete_chapters_by_document(client: AsyncMilvusClient, document_id: int) -> None:
+    await client.delete(
         collection_name=CHAPTER_COLL,
         filter=f"document_id == {int(document_id)}",
     )
@@ -146,14 +267,31 @@ def delete_sentences_by_document(client: MilvusClient, document_id: int) -> None
     )
 
 
-# ============ collection 管理 ============
+async def adelete_sentences_by_document(client: AsyncMilvusClient, document_id: int) -> None:
+    await client.delete(
+        collection_name=SENTENCE_COLL,
+        filter=f"document_id == {int(document_id)}",
+    )
+
+
+# ==========================================
+# collection 管理
+# ==========================================
 def list_collections(client: MilvusClient) -> list[str]:
     """列出 milvus 实例上所有集合名。"""
     return client.list_collections()
 
 
+async def alist_collections(client: AsyncMilvusClient) -> list[str]:
+    return await client.list_collections()
+
+
 def has_collection(client: MilvusClient, name: str) -> bool:
     return client.has_collection(collection_name=name)
+
+
+async def ahas_collection(client: AsyncMilvusClient, name: str) -> bool:
+    return await client.has_collection(collection_name=name)
 
 
 def get_collection_row_count(client: MilvusClient, name: str) -> int:
@@ -162,5 +300,14 @@ def get_collection_row_count(client: MilvusClient, name: str) -> int:
     return int(stats.get("row_count", 0))
 
 
+async def aget_collection_row_count(client: AsyncMilvusClient, name: str) -> int:
+    stats = await client.get_collection_stats(collection_name=name)
+    return int(stats.get("row_count", 0))
+
+
 def drop_collection(client: MilvusClient, name: str) -> None:
     client.drop_collection(collection_name=name)
+
+
+async def adrop_collection(client: AsyncMilvusClient, name: str) -> None:
+    await client.drop_collection(collection_name=name)
