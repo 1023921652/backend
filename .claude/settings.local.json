@@ -4,7 +4,12 @@
       "Bash(uv run *)",
       "WebSearch",
       "Bash(uv pip *)",
-      "Bash(uv sync *)"
+      "Bash(uv sync *)",
+      "Bash(uv add *)",
+      "Bash(mysql *)",
+      "Bash(where mysql *)",
+      "Bash(cmd //c \"where mysql\")",
+      "Bash(cmd //c \"sc query MySQL 2>nul || sc query MySQL80 2>nul || sc query mysql 2>nul\")"
     ]
   }
 }

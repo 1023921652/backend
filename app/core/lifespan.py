@@ -24,6 +24,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     from app.agent.main import set_agent
 
+    # ============ RBAC DB 引擎初始化 ============
+    # dev 模式自动建表；prod 用 alembic upgrade head
+    try:
+        from app.core.config import settings
+        from app.db.base import Base
+        from app.db.session import engine
+        from app.auth import models  # noqa: F401  确保表元数据被注册到 Base.metadata
+
+        if settings.env == "dev":
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+        logger.info("rbac db engine ready (env=%s)", settings.env)
+    except Exception:
+        logger.exception("rbac db init failed; auth endpoints will 500 on demand")
+
     logger.info("building agent singleton at startup...")
 
     try:
@@ -71,3 +86,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
     # 这里不主动关闭 state_redis_client，进程退出时由 OS 回收
+
+    # 关闭 RBAC DB 引擎
+    try:
+        from app.db.session import engine
+        await engine.dispose()
+        logger.info("rbac db engine disposed")
+    except Exception:
+        logger.exception("rbac db engine dispose failed")

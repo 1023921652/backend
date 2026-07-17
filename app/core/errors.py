@@ -1,7 +1,7 @@
 """全局异常处理：按路径前缀分流错误格式。
 
-/v1/ 前缀 → OpenAI 错误格式 {"error": {...}}
-其余路径 → FastAPI 默认 {"detail": ...}（保护 /items 现有测试）
+/v1/chat/* 与 /v1/rag/* 与 /v1/contextual_rag/* → OpenAI 错误格式 {"error": {...}}
+/v1/auth/* 与其余路径 → FastAPI 默认 {"detail": ...}（保留 dict 结构，便于客户端按 code 分支）
 """
 from __future__ import annotations
 
@@ -17,8 +17,11 @@ from app.schemas.openai_types import ErrorBody, ErrorResponse
 logger = logging.getLogger(__name__)
 
 
+_OPENAI_PREFIXES = ("/v1/chat", "/v1/models", "/v1/rag", "/v1/contextual_rag")
+
+
 def _is_openai_path(path: str) -> bool:
-    return path.startswith("/v1/")
+    return any(path.startswith(p) for p in _OPENAI_PREFIXES)
 
 
 def _openai_error(status: int, message: str, etype: str, code: str | None = None) -> JSONResponse:
