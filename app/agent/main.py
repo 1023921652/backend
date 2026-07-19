@@ -1,6 +1,6 @@
 from app.agent.llm.deepseek import deepseek_llm
 from langchain.agents import create_agent
-from app.agent.config.redis_config import get_redis_checkpointer
+from app.agent.checkpointer import get_redis_checkpointer
 from app.agent.state.main_state import CustomAgentState
 from app.agent.llm import get_llm
 from app.agent.middleware.context import OrphanToolCallSanitizerMiddleware

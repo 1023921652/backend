@@ -13,8 +13,8 @@ import pymysql
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.db.base import Base
-from app.db.session import engine
+from app.db.mysql.base import Base
+from app.db.mysql.session import engine
 from app.core.config import settings
 
 
@@ -48,8 +48,8 @@ async def _create_tables():
     必须是 async fixture，与测试共用 session-scoped event loop，
     否则 engine 创建的连接会跨 loop 失效。
     """
-    from app.db.base import Base
-    from app.db.session import engine
+    from app.db.mysql.base import Base
+    from app.db.mysql.session import engine
     from app.auth import models  # noqa: F401 注册元数据
 
     async with engine.begin() as conn:
@@ -77,7 +77,7 @@ async def async_client():
 async def _bootstrap_enterprise(creator_user_id: int, name: str, slug: str):
     """service 层直建企业，绕过 API 链路。"""
     from app.auth import service as svc
-    from app.db.session import async_session_factory
+    from app.db.mysql.session import async_session_factory
 
     async with async_session_factory() as s:
         async with s.begin():

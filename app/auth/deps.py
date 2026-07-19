@@ -20,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.security import decode_token
-from app.db.session import get_session
+from app.db.mysql.session import get_session
 
 # Swagger UI 会显示 🔒 + Authorize 按钮；auto_error=True 缺失时自动 403
 bearer_scheme = HTTPBearer(auto_error=True)

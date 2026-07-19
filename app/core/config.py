@@ -16,9 +16,18 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # 数据库
+    # MySQL
     database_url: str = "mysql+aiomysql://root:root@localhost:3306/rbac?charset=utf8mb4"
     db_echo: bool = False
+
+    # Redis
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_max_connections: int = 100
+    redis_health_check_interval: int = 30
+    redis_checkpoint_prefix: str = "checkpoints"
+    redis_checkpoint_ttl_minutes: int = 60
 
     # JWT
     jwt_secret: str = "change-me-in-prod"

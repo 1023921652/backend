@@ -28,8 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # dev 模式自动建表；prod 用 alembic upgrade head
     try:
         from app.core.config import settings
-        from app.db.base import Base
-        from app.db.session import engine
+        from app.db.mysql.base import Base
+        from app.db.mysql.session import engine
         from app.auth import models  # noqa: F401  确保表元数据被注册到 Base.metadata
 
         if settings.env == "dev":
@@ -85,11 +85,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.agent = None
         yield
 
-    # 这里不主动关闭 state_redis_client，进程退出时由 OS 回收
+    # 关闭 Redis 连接池
+    try:
+        from app.db.redis.pool import pool
+        await pool.aclose()
+        logger.info("redis pool closed")
+    except Exception:
+        logger.exception("redis pool close failed")
 
     # 关闭 RBAC DB 引擎
     try:
-        from app.db.session import engine
+        from app.db.mysql.session import engine
         await engine.dispose()
         logger.info("rbac db engine disposed")
     except Exception:

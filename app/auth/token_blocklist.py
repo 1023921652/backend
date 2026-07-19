@@ -11,15 +11,12 @@ from __future__ import annotations
 
 import logging
 
-import redis.asyncio as redis
-
-from app.agent.config.redis_config import pool
+from app.db.redis.clients import str_redis_client
 
 logger = logging.getLogger(__name__)
 
-# 共享现有连接池，但 decode_responses=True 拿 str 结果方便处理；
-# 不影响 LangGraph 的 state_redis_client（它必须保持 bytes）
-_blocklist = redis.Redis(connection_pool=pool, decode_responses=True)
+# 复用 app/db/redis/clients.py 的 str 模式客户端（decode_responses=True）
+_blocklist = str_redis_client
 
 _KEY_PREFIX = "auth:blk:"
 
