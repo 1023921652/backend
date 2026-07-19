@@ -172,6 +172,11 @@ async def refresh_endpoint(body: RefreshIn, session: SessionDep):
             user, ent, access_token, refresh_token = await service.refresh_tokens(
                 session, refresh_token=body.refresh_token
             )
+    except service.ReplayDetected as e:
+        # 重放检测：在独立事务里撤销该用户所有 token（主事务已回滚）
+        async with session.begin():
+            await service.revoke_all_user_tokens(session, user_id=e.user_id)
+        _raise_from_auth_error(e)
     except service.AuthError as e:
         _raise_from_auth_error(e)
     from app.auth.security import decode_token
@@ -185,13 +190,20 @@ async def refresh_endpoint(body: RefreshIn, session: SessionDep):
     )
 
 
-# ============ 5. Logout（撤销 refresh token）============
+# ============ 5. Logout（撤销 access + refresh token）============
 @router.post("/logout", response_model=Ok)
 async def logout_endpoint(
     body: LogoutIn,
     session: SessionDep,
     ctx: CurrentUser,
 ):
+    # 撤销当前 access token：写入 Redis 黑名单，TTL=剩余有效期
+    from datetime import datetime, timezone
+    from app.auth.token_blocklist import revoke_access_jti
+    now = int(datetime.now(timezone.utc).timestamp())
+    remaining = max(0, ctx.exp - now)
+    await revoke_access_jti(ctx.jti, remaining)
+
     async with session.begin():
         await service.logout(session, refresh_token=body.refresh_token)
     return Ok()

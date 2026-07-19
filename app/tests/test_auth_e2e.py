@@ -159,3 +159,39 @@ async def test_last_owner_protection(owner_client):
         f"/v1/auth/enterprises/{eid}/members/{uid}", headers=owner_headers
     )
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_access_token(owner_client):
+    """logout 后 access token 立即失效（Redis jti 黑名单生效）。"""
+    client, owner_headers, eid, uid = owner_client
+
+    # logout 前能访问 /me
+    r = await client.get("/v1/auth/me", headers=owner_headers)
+    assert r.status_code == 200
+
+    # logout（仅撤销 refresh，但应同时把 access jti 写入 Redis 黑名单）
+    r = await client.post(
+        "/v1/auth/logout", json={}, headers=owner_headers
+    )
+    assert r.status_code == 200
+
+    # 同一个 access token 应立即 401 token_revoked
+    r = await client.get("/v1/auth/me", headers=owner_headers)
+    assert r.status_code == 401, r.text
+    assert r.json()["detail"]["code"] == "token_revoked"
+
+    # 重新登录拿新 token → 新 token 仍可用（黑名单只针对具体 jti）
+    r = await client.post(
+        "/v1/auth/login/enterprise",
+        json={
+            "enterprise_id": eid,
+            "identifier": "owner",
+            "password": "Owner1234",
+        },
+    )
+    assert r.status_code == 200
+    new_token = r.json()["access_token"]
+    new_headers = {"Authorization": f"Bearer {new_token}"}
+    r = await client.get("/v1/auth/me", headers=new_headers)
+    assert r.status_code == 200

@@ -33,6 +33,7 @@ class AuthContext:
     roles: list[str]
     scopes: list[str]
     jti: str
+    exp: int  # access token 过期时间戳（秒），用于 logout 时算 Redis TTL
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -65,10 +66,19 @@ async def get_current_user(
         roles = list(payload.get("roles", []))
         scopes = list(payload.get("scopes", []))
         jti = str(payload["jti"])
+        exp = int(payload["exp"])
     except (KeyError, ValueError) as e:
         raise HTTPException(
             status_code=401,
             detail={"code": "malformed_token", "message": f"missing claims: {e}"},
+        )
+
+    # access token jti 黑名单查询（logout 后立即失效，Redis 故障 fail-open）
+    from app.auth.token_blocklist import is_access_jti_revoked
+    if await is_access_jti_revoked(jti):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "token_revoked", "message": "access token has been revoked"},
         )
 
     return AuthContext(
@@ -77,6 +87,7 @@ async def get_current_user(
         roles=roles,
         scopes=scopes,
         jti=jti,
+        exp=exp,
     )
 
 

@@ -44,10 +44,28 @@ def _utcnow_naive() -> datetime:
 
 # ============ 异常类型（api 层转 HTTPException）============
 class AuthError(Exception):
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400, extra: dict | None = None):
         self.code = code
         self.message = message
         self.status = status
+        self.extra = extra or {}
+
+
+class ReplayDetected(AuthError):
+    """重放检测：携带 user_id，API 层据此在独立事务中撤销该用户所有 token。
+
+    必须独立事务：replay 触发时主事务（refresh 旋转）会回滚，
+    若不拆分，"撤销全部" 的 UPDATE 会被回滚失效。
+    """
+
+    def __init__(self, user_id: int):
+        super().__init__(
+            code="token_replayed",
+            message="refresh token replay detected; all tokens revoked",
+            status=401,
+            extra={"user_id": user_id},
+        )
+        self.user_id = user_id
 
 
 # ============ Permissions 字典 bootstrap ============
@@ -346,12 +364,9 @@ async def refresh_tokens(
         raise AuthError("token_not_found", "refresh token not recognized", 401)
     if rec.revoked_at is not None:
         # 重放：可能是泄漏，撤销整个用户的所有 token
-        await session.execute(
-            update(RefreshToken)
-            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=_utcnow_naive())
-        )
-        raise AuthError("token_replayed", "refresh token replay detected; all tokens revoked", 401)
+        # 注意：撤销操作不能在当前事务里做——主事务因 raise 会回滚，撤销会被撤销
+        # 因此抛 ReplayDetected，由 API 层在独立事务里调 revoke_all_user_tokens
+        raise ReplayDetected(user_id=user_id)
     if rec.expires_at < _utcnow_naive():
         raise AuthError("token_expired", "refresh token expired", 401)
 
@@ -385,6 +400,20 @@ async def refresh_tokens(
         )
     )
     return user, ent, access_token, new_refresh
+
+
+async def revoke_all_user_tokens(session: AsyncSession, *, user_id: int) -> int:
+    """撤销指定用户的所有未撤销 refresh token。返回受影响行数。
+
+    用于 replay 检测后强制下线所有会话。
+    必须由调用方在独立事务里执行——不能与抛异常的事务混用。
+    """
+    result = await session.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=_utcnow_naive())
+    )
+    return result.rowcount or 0
 
 
 async def logout(session: AsyncSession, *, refresh_token: Optional[str]) -> None:
